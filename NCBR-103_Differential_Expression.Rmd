@@ -1,0 +1,963 @@
+---
+title: 'NCBR-103:RNA-Seq Differential Expression'
+author: "Arun Boddapati"
+date: "10/15/2019"
+output:
+  html_document:
+    code_folding: hide
+    df_print: paged
+    fig_caption: yes
+    fig_height: 7
+    fig_width: 9
+    css: styles.css
+    toc: yes
+    toc_float: yes
+geometry: margin=4cm
+Room: Blgd 29B, INN Suite-20
+Email: boddapatia2@nih.gov
+---
+```{r setup, include=TRUE, echo=FALSE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set( include=TRUE, echo=FALSE, message=FALSE, warning=FALSE)
+```
+
+```{r echo=FALSE, fig.height=10, fig.width=10, message=FALSE, warning=FALSE, paged.print=FALSE}
+library(edgeR)
+library(limma)
+library(ggplot2)
+library(ggfortify)
+library(knitr)
+library(kableExtra)
+library(reshape2)
+library(RColorBrewer)
+library(amap)
+library(plotly)
+library(splitstackshape)
+library(NCBR.RTools)
+library(data.table)
+library(dplyr)
+library(vivlib)
+library(gplots)
+library(mixOmics)
+library(data.table)
+library(tidyr)
+library(gplots)
+library(splitstackshape)
+library(dendextend)
+library(ggdendro)
+library(rmarkdown)
+library(forestmangr)
+library(scales)
+```
+CCR6- & CCR6+(Naive Cells) and CCR6- & CCR6+ (Memory Cells)
+
+PI Name: Dr.Josuah Farber, NIAID
+Staff Scientist: Dr. Satya Singh, NIAID
+Bioinformatics Analyst: Arun Boddapati, NCBR, FNLCR
+
+Comparing the progression of Naive Cells to Memory Cells by RNA-seq experiments:
+
+The project examines the progression of CCR6- and CCR6+ Naive cells to CCR6+ Memory cells, to
+find markers that are indictive of CCR6+ Naive cells to CCR6- Memory Cells to CCR6+ Memory cells.
+
+Methods:
+
+RNA-seq analysis was performed using ccbr pipeliner (https://github.com/CCBR/Pipeliner)
+  1. Quality analysis
+  2. Trimming of adapters
+  3. Removing over-represented sequences
+  4. Alignment
+  5. Quantification
+  6. Quality control is available in multiQCReport.html
+
+# Raw Data {.tabset}
+
+```{r echo=F,warning=FALSE}
+#Input the data containing RSEM raw gene counts from Pipeliner
+ncbr103 = read.table("../Rawdata/RawCountFile_RSEM_genes.txt", header = T, sep = "\t", stringsAsFactors = F)
+Read_input= as.data.frame(ncbr103)
+#Read the Phenotype file
+pheno = read.table(file = "../Rawdata/groups.txt", header = T, sep = "\t")
+Treatment = as.factor(pheno$Treatment)
+TS = factor(paste0(pheno$Treatment, "_", pheno$Condition), levels = c("Memory_Negative", "Memory_Positive", "Naive_Negative","Naive_Positive"))
+pairs = pheno$Pairs
+design = model.matrix(~0+TS+pairs)
+colnames(design)[1:4] = levels(TS)
+rownames(Read_input) = Read_input[,1]
+Read_input = Read_input[,-1]
+```
+
+
+## Data Filtering
+
+CPM based filtering is used to remove genes having expression less than 10-15 read counts across atleast 4 samples
+Filtering the genes using cpm filtering for only Naive Samples (Paired)
+
+```{r echo =TRUE,warning=FALSE}
+#CPM based filtering step
+y <- DGEList(Read_input,group = TS )
+keep = rowSums(cpm(y)>1)>=2
+table(keep)
+y <- y[keep, , keep.lib.sizes=FALSE]
+y <- calcNormFactors(y)
+DT::datatable(y$samples, 
+         extensions = c('FixedColumns',"FixedHeader"),
+          options = list(scrollX = TRUE,
+                         paging=TRUE,
+                         fixedHeader=TRUE))
+```
+
+# Before Normalization {.tabset}
+
+Plotting the libary sizes and unnormalized counts for Naive Samples (Paired)
+Here the Barplot shows library sizes of CCR6 -/+ Samples from RNA-Seq Experiments and boxplot of unnormalized counts
+
+## Boxplot-Library size and Unnormalized logCPM
+```{r echo=TRUE,,warning=FALSE}
+
+#Barplot showing library sizes
+par(mfrow=c(1,2))
+barplot(y$samples$lib.size,names=colnames(y),las=2)
+title("Library Sizes")
+logcounts <- cpm(y,log=TRUE, prior.count = 0.5)
+logcounts[is.na(logcounts)] = 0
+logcounts[logcounts<0] = 0
+
+#Boxplot showing unnormalized logCPM counts
+boxplot(logcounts, xlab="", ylab="Log2 counts per million",las=2, outline = F,col = "red")
+abline(h=median(logcounts),col="blue")
+title("Unnormalized logCPMs")
+```
+
+## Density Plot
+
+```{r echo=T, warning=FALSE}
+ab = data.frame(logcounts)
+colnames(ab) = pheno$Samples
+setDT(ab, keep.rownames = T)
+ab = melt(ab, id = "rn")
+p = ggplot(ab, aes(x=value, colour = variable))+ geom_density(alpha=0.25)
+p <- ggplotly(p)
+p
+```
+
+## DendoGram
+
+```{r echo = FALSE, warning = F}
+d= dist(t(y$counts),method="euclidean",diag=TRUE)
+hc = hclust(d, method = "ward.D2")
+dendr = dendro_data(hc, type="rectangle")
+clust <- cutree(hc,k=3)
+clust.df <- data.frame(label=names(clust), cluster=factor(clust))
+dendr[["labels"]] <- merge(dendr[["labels"]],clust.df, by="label")
+
+#pdf("../Analysis_With_NewBatches/BeforeBatchCorrection_Dendogram.pdf")
+ggplot() +
+geom_segment(data=segment(dendr), aes(x=x, y=y, xend=xend, yend=yend)) +
+geom_text(data=label(dendr), aes(x, y, label=label, hjust=0, color=TS),
+size=2) +
+coord_flip() + scale_y_reverse(expand=c(0.2, 0)) +
+theme(axis.line.y=element_blank(),
+axis.ticks.y=element_blank(),
+axis.text.y=element_blank(),
+axis.title.y=element_blank(),
+panel.background=element_rect(fill="white"),
+panel.grid=element_blank())
+#dev.off()
+```
+
+## Interactive PCA (Before Normalization)
+
+```{r echo = FALSE, warning = FALSE}
+x <- t(y$counts)
+x <- x[, apply(x, 2, var)!= 0]
+pca=prcomp(x, scale.=TRUE)
+pc1 = round(pca$sdev[1]^2/sum(pca$sdev^2)*100,2)
+pc2 = round(pca$sdev[2]^2/sum(pca$sdev^2)*100,2)
+pc3 = round(pca$sdev[3]^2/sum(pca$sdev^2)*100,2)
+col <- brewer.pal(nlevels(TS), "Set1")
+
+plot_ly(as.data.frame(pca$x[,1:3]),
+x = ~PC1, y = ~PC2, z = ~PC3,
+color = TS, colors=col,
+hoverinfo="text", hovertext= pheno$Samples) %>%
+add_markers() %>%
+layout(title = "Before Batch Correction PCA",
+scene = list(xaxis = list(title = paste0("PC1 (", pc1, "%)")),
+yaxis = list(title = paste0("PC2 (", pc2, "%)")),
+zaxis = list(title = paste0("PC3 (", pc3, "%)"))))
+```
+
+## Voom Normalization
+
+```{r echo =TRUE,warning=FALSE}
+#Voom Normalization function
+v <- voom(y,design,plot = TRUE,normalize.method = "quantile")
+```
+
+# After Normalization {.tabset}
+
+## Density Plot (Interactive) (After Normalization)
+
+```{r echo=T, warning=FALSE}
+ab = data.frame(v)
+colnames(ab) = pheno$Samples
+setDT(ab, keep.rownames = T)
+ab = melt(ab, id = "rn")
+p = ggplot(ab, aes(x=value, colour = variable))+ geom_density(alpha=0.25)
+p <- ggplotly(p)
+p
+```
+
+## Dendogram
+```{r echo = FALSE, warning = F}
+d= Dist(t(v$E),method="euclidean",diag=TRUE)
+hc = hclust(d, method = "ward.D2")
+dendr = dendro_data(hc, type="rectangle")
+clust <- cutree(hc,k=3)
+clust.df <- data.frame(label=names(clust), cluster=factor(clust))
+dendr[["labels"]] <- merge(dendr[["labels"]],clust.df, by="label")
+
+#pdf("../Analysis_With_NewBatches/BeforeBatchCorrection_Dendogram.pdf")
+ggplot() +
+geom_segment(data=segment(dendr), aes(x=x, y=y, xend=xend, yend=yend)) +
+geom_text(data=label(dendr), aes(x, y, label=label, hjust=0, color=TS),
+size=2) +
+coord_flip() + scale_y_reverse(expand=c(0.2, 0)) +
+theme(axis.line.y=element_blank(),
+axis.ticks.y=element_blank(),
+axis.text.y=element_blank(),
+axis.title.y=element_blank(),
+panel.background=element_rect(fill="white"),
+panel.grid=element_blank())
+#dev.off()
+```
+
+## Interactive-PCA
+
+```{r echo = FALSE, warning = FALSE}
+x <- t(v$E)
+x <- x[, apply(x, 2, var)!= 0]
+pca=prcomp(x, scale.=TRUE)
+pc1 = round(pca$sdev[1]^2/sum(pca$sdev^2)*100,2)
+pc2 = round(pca$sdev[2]^2/sum(pca$sdev^2)*100,2)
+pc3 = round(pca$sdev[3]^2/sum(pca$sdev^2)*100,2)
+col <- brewer.pal(nlevels(TS), "Set1")
+
+plot_ly(as.data.frame(pca$x[,1:3]),
+x = ~PC1, y = ~PC2, z = ~PC3,
+color = TS, colors=col,
+hoverinfo="text", hovertext= pheno$Samples) %>%
+add_markers() %>%
+layout(title = "After Normalization",
+scene = list(xaxis = list(title = paste0("PC1 (", pc1, "%)")),
+yaxis = list(title = paste0("PC2 (", pc2, "%)")),
+zaxis = list(title = paste0("PC3 (", pc3, "%)"))))
+```
+#2DPCA plot function
+```{r echo = F, warning = FALSE }
+pr2=prcomp(t(v$E))
+dd=cbind(t(v$E),Condition=as.character(TS), Treatment = as.character(Treatment))
+pdf("After_Normalization_2D-PCA_Plot.pdf", height = 10, width =15)
+autoplot(pr2,data=dd, colour = 'Condition',frame=F, fill = 'Condition',shape = 'Treatment',
+         label = F, size = 3,x=1,y=2) +scale_color_manual(values = c("Red2","DarkGreen","Blue3","darkgoldenrod")) + scale_shape_manual(values = c(21, 22))+ scale_fill_manual(values = c("Red2","DarkGreen","Blue3","darkgoldenRod"))
+dev.off()
+```
+
+
+## Sample Distance by Hierarchical clustering
+```{r echo = TRUE, warning = F}
+#Heatmap function
+d=Dist(t(v$E),method="euclidean",diag=TRUE)
+m=as.matrix(d)
+new.palette=colorRampPalette(c("black","red","yellow","white"),space="rgb")
+heatmap(m,symm=TRUE,col=new.palette(20),cexRow= 0.5, cexCol = 0.5)
+```
+
+## Boxplots-Unnormalized logCPM and Voom Normalized CPM
+```{r echo = TRUE, warning = F}
+par(mfrow=c(1,2))
+#Boxplot for Normalized and Unnormalized logCPM
+boxplot(logcounts, xlab="", ylab="Log2 counts per million",las=2,main="Unnormalised logCPM", outline=F,col = "red", cex.axis = 0.5, cex.lab=1)
+abline(h=median(logcounts),col="blue")
+boxplot(v$E, xlab="", ylab="Log2 counts per million",las=2,main="Voom transformed CPM", outline=F,col = "green", cex.axis = 0.5, cex.lab=1)
+abline(h=median(v$E),col="blue")
+```
+
+# Result-Top DE Tables {.tabset}
+```{r echo =TRUE,warning=FALSE}
+fit <- lmFit(v$E, design)
+cont.matrix <- makeContrasts(MNvsNN = Memory_Negative-Naive_Negative,
+                             MPvsNN = Memory_Positive-Naive_Negative,
+                             NPvsNN = Naive_Positive-Naive_Negative,
+                             MNvsNP = Memory_Negative-Naive_Positive,
+                             MPvsNP = Memory_Positive-Naive_Positive,
+                             MPvsMN = Memory_Positive-Memory_Negative,
+                            levels=design)
+
+#View(cont.matrix) 
+
+fit <- contrasts.fit(fit, cont.matrix)
+fit_final<- eBayes(fit)
+MNvsNN= topTable(fit_final, coef="MNvsNN", n=Inf)
+MPvsNN = topTable(fit_final, coef = "MPvsNN", n=Inf)
+NPvsNN = topTable(fit_final, coef = "NPvsNN", n=Inf)
+MNvsNP = topTable(fit_final, coef="MNvsNP", n=Inf)
+MPvsNP = topTable(fit_final, coef="MPvsNP", n=Inf)
+MPvsMN = topTable(fit_final, coef = "MPvsMN", n = Inf)
+summa.fit <- decideTests(fit_final)
+summary(summa.fit)
+MNvsNNsubset = subset(MNvsNN, MNvsNN$adj.P.Val < 0.05 & abs(MNvsNN$logFC)> 2)
+setDT(MNvsNNsubset, keep.rownames = T, check.names = T)
+colnames(MNvsNNsubset)[1] = c("GeneName")
+#write.csv(MNvsNNsubset[,c(1,5)], "Top_MNvsNN_Genes.csv", col.names = T, row.names = T, quote = F)
+MPvsNNsubset = subset(MPvsNN, MPvsNN$adj.P.Val < 0.05 & abs(MPvsNN$logFC)> 2)
+setDT(MPvsNNsubset, keep.rownames = T, check.names = T)
+colnames(MPvsNNsubset)[1] = c("GeneName")
+#write.csv(MPvsNNsubset[,c(1,5)], "Top_MPvsNN_Genes.csv", col.names = T, row.names = T, quote = F)
+NPvsNNsubset = subset(NPvsNN, NPvsNN$adj.P.Val < 0.05 & abs(NPvsNN$logFC)> 2)
+setDT(NPvsNNsubset, keep.rownames = T, check.names = T)
+colnames(NPvsNNsubset)[1] = c("GeneName")
+#write.csv(NPvsNNsubset[,c(1,5)], "Top_NPvsNN_Genes.csv", col.names = T, row.names = T, quote = F)
+MNvsNPsubset = subset(MNvsNP, MNvsNP$adj.P.Val < 0.05 & abs(MNvsNP$logFC)> 2)
+setDT(MNvsNPsubset, keep.rownames = T, check.names = T)
+colnames(MNvsNPsubset)[1] = c("GeneName")
+#write.csv(MNvsNPsubset[,c(1,5)], "Top_MNvsNP_Genes.csv", col.names = T, row.names = T, quote = F)
+MPvsNPsubset = subset(MPvsNP, MPvsNP$adj.P.Val < 0.05 & abs(MPvsNP$logFC)> 2)
+setDT(MPvsNPsubset, keep.rownames = T, check.names = T)
+colnames(MPvsNPsubset)[1] = c("GeneName")
+#write.csv(MPvsNPsubset[,c(1,5)], "Top_MPvsNP_Genes.csv", col.names = T, row.names = T, quote = F)
+MPvsMNsubset = subset(MPvsMN, MPvsMN$adj.P.Val < 0.05 & abs(MPvsMN$logFC)> 2)
+setDT(MPvsMNsubset, keep.rownames = T, check.names = T)
+colnames(MPvsMNsubset)[1] = c("GeneName")
+#write.csv(MPvsMNsubset[,c(1,5)], "Top_MPvsMN_Genes.csv", col.names = T, row.names = T, quote = F)
+
+
+#write.table(MPvsMN, "../Results/LimmaResults/MPvsMN_DE.txt", sep = "\t", quote = F, row.names = T, col.names = T)
+```
+#MNvsNN
+```{r echo=T, warning=F}
+MNvsNNsubset$GeneName <- factor(MNvsNNsubset$GeneName, levels = unique(MNvsNNsubset$GeneName)[order(MNvsNNsubset$logFC, decreasing = F)])
+MNvsNNsubset$groups = "NA"
+MNvsNNsubset[which(logFC< 0 ),"groups"] <- "DownRegulated"
+MNvsNNsubset[which(logFC>= 0 ),"groups"] <- "UpRegulated"
+
+p <- plot_ly(MNvsNNsubset) %>%
+  add_trace(x = ~GeneName, y = ~logFC, type = 'bar', name = ~groups,
+            color = ~logFC>0, colors  = c("cornflowerblue", "coral"),
+            hoverinfo = "text",
+            text = ~paste0(GeneName, " : ", logFC))  %>%
+  layout(title = 'Top Differentially Expressed Genes MN vs NN at FDR < 0.05',
+         xaxis = list(title = "", tickfont = list(size = 8)),
+         yaxis = list(side = 'left', title = 'logFoldChange', showgrid = FALSE, zeroline = FALSE))
+htmlwidgets::saveWidget(p, "MNvsNN_TopDE.html")
+```
+#MPvsNN
+```{r echo=T, warning=F}
+MPvsNNsubset$GeneName <- factor(MPvsNNsubset$GeneName, levels = unique(MPvsNNsubset$GeneName)[order(MPvsNNsubset$logFC, decreasing = F)])
+MPvsNNsubset$groups = "NA"
+MPvsNNsubset[which(logFC< 0 ),"groups"] <- "DownRegulated"
+MPvsNNsubset[which(logFC>= 0 ),"groups"] <- "UpRegulated"
+
+p <- plot_ly(MPvsNNsubset) %>%
+  add_trace(x = ~GeneName, y = ~logFC, type = 'bar', name = ~groups,
+            color = ~logFC>0, colors  = c("cornflowerblue", "coral"),
+            hoverinfo = "text",
+            text = ~paste0(GeneName, " : ", logFC))  %>%
+  layout(title = 'Top Differentially Expressed Genes MP vs NN at FDR < 0.05',
+         xaxis = list(title = "", tickfont = list(size = 8)),
+         yaxis = list(side = 'left', title = 'logFoldChange', showgrid = FALSE, zeroline = FALSE))
+htmlwidgets::saveWidget(p, "MPvsNN_TopDE.html")
+```
+
+#NPvsNN
+```{r echo=T, warning=F}
+NPvsNNsubset$GeneName <- factor(NPvsNNsubset$GeneName, levels = unique(NPvsNNsubset$GeneName)[order(NPvsNNsubset$logFC, decreasing = F)])
+NPvsNNsubset$groups = "NA"
+NPvsNNsubset[which(logFC< 0 ),"groups"] <- "DownRegulated"
+NPvsNNsubset[which(logFC>= 0 ),"groups"] <- "UpRegulated"
+
+p <- plot_ly(NPvsNNsubset) %>%
+  add_trace(x = ~GeneName, y = ~logFC, type = 'bar', name = ~groups,
+            color = ~logFC>0, colors  = c("cornflowerblue", "coral"),
+            hoverinfo = "text",
+            text = ~paste0(GeneName, " : ", logFC))  %>%
+  layout(title = 'Top Differentially Expressed Genes NP vs NN at FDR < 0.05',
+         xaxis = list(title = "", tickfont = list(size = 8)),
+         yaxis = list(side = 'left', title = 'logFoldChange', showgrid = FALSE, zeroline = FALSE))
+htmlwidgets::saveWidget(p, "NPvsNN_TopDE.html")
+```
+#MNvsNP
+```{r echo=T, warning=F}
+MNvsNPsubset$GeneName <- factor(MNvsNPsubset$GeneName, levels = unique(MNvsNPsubset$GeneName)[order(MNvsNPsubset$logFC, decreasing = F)])
+MNvsNPsubset$groups = "NA"
+MNvsNPsubset[which(logFC< 0 ),"groups"] <- "DownRegulated"
+MNvsNPsubset[which(logFC>= 0 ),"groups"] <- "UpRegulated"
+
+p <- plot_ly(MNvsNPsubset) %>%
+  add_trace(x = ~GeneName, y = ~logFC, type = 'bar', name = ~groups,
+            color = ~logFC>0, colors  = c("cornflowerblue", "coral"),
+            hoverinfo = "text",
+            text = ~paste0(GeneName, " : ", logFC))  %>%
+  layout(title = 'Top Differentially Expressed Genes MN vs NP at FDR < 0.05',
+         xaxis = list(title = "", tickfont = list(size = 8)),
+         yaxis = list(side = 'left', title = 'logFoldChange', showgrid = FALSE, zeroline = FALSE))
+htmlwidgets::saveWidget(p, "MNvsNP_TopDE.html")
+```
+
+#MPvsNP
+```{r echo=T, warning=F}
+MPvsNPsubset$GeneName <- factor(MPvsNPsubset$GeneName, levels = unique(MPvsNPsubset$GeneName)[order(MPvsNPsubset$logFC, decreasing = F)])
+MPvsNPsubset$groups = "NA"
+MPvsNPsubset[which(logFC< 0 ),"groups"] <- "DownRegulated"
+MPvsNPsubset[which(logFC>= 0 ),"groups"] <- "UpRegulated"
+
+p <- plot_ly(MPvsNPsubset) %>%
+  add_trace(x = ~GeneName, y = ~logFC, type = 'bar', name = ~groups,
+            color = ~logFC>0, colors  = c("cornflowerblue", "coral"),
+            hoverinfo = "text",
+            text = ~paste0(GeneName, " : ", logFC))  %>%
+  layout(title = 'Top Differentially Expressed Genes MP vs NP at FDR < 0.05',
+         xaxis = list(title = "", tickfont = list(size = 8)),
+         yaxis = list(side = 'left', title = 'logFoldChange', showgrid = FALSE, zeroline = FALSE))
+htmlwidgets::saveWidget(p, "MPvsNP_TopDE.html")
+```
+
+#MPvsMN
+```{r echo=T, warning=F}
+MPvsMNsubset$GeneName <- factor(MPvsMNsubset$GeneName, levels = unique(MPvsMNsubset$GeneName)[order(MPvsMNsubset$logFC, decreasing = F)])
+MPvsMNsubset$groups = "NA"
+MPvsMNsubset[which(logFC< 0 ),"groups"] <- "DownRegulated"
+MPvsMNsubset[which(logFC>= 0 ),"groups"] <- "UpRegulated"
+
+p <- plot_ly(MPvsMNsubset) %>%
+  add_trace(x = ~GeneName, y = ~logFC, type = 'bar', name = ~groups,
+            color = ~logFC>0, colors  = c("cornflowerblue", "coral"),
+            hoverinfo = "text",
+            text = ~paste0(GeneName, " : ", logFC))  %>%
+  layout(title = 'Top Differentially Expressed Genes MP vs MN at FDR < 0.05',
+         xaxis = list(title = "", tickfont = list(size = 8)),
+         yaxis = list(side = 'left', title = 'logFoldChange', showgrid = FALSE, zeroline = FALSE))
+htmlwidgets::saveWidget(p, "MPvsMN_TopDE.html")
+```
+<!-- # WebgestAlt -->
+<!-- ```{r echo = True, warning = F} -->
+<!-- outputDirectory <- getwd() -->
+<!-- enrichResult <- WebGestaltR(enrichMethod="GSEA", -->
+<!--                         organism="hsapiens",enrichDatabase="pathway_Reactome",interestGeneFil -->
+<!--                         ="../Results/LimmaResults/MNvsNN_DE.rnk", -->
+<!--                         interestGeneType="genesymbol",fdrThr=0.1, sigMethod="fdr",nThreads = -->
+<!--                           16,projectName = "../Results/WEBGESTALT-MNvsNN", fdrMethod = "BH", -->
+<!--                         perNum = 1000, -->
+<!--                         reportNum = 65,minNum = 5,maxNum = 2000,setCoverNum=10, -->
+<!--                             outputDirectory=outputDirectory) -->
+
+<!-- ``` -->
+
+## MergeTables
+```{r echo = T, warning=F}
+library(data.table)
+setDT(MNvsNN, keep.rownames = T, check.names = T)
+MNvsNN = MNvsNN[,c(1,2,5,6)]
+colnames(MNvsNN)  = c("GeneName","logFC_MNvsNN","P-val_MNvsNN","FDR_MNvsNN")
+setDT(MPvsNN, keep.rownames = T, check.names = T)
+MPvsNN = MPvsNN[,c(1,2,5,6)]
+colnames(MPvsNN)  = c("GeneName","logFC_MPvsNN","P-val_MPvsNN","FDR_MPvsNN")
+setDT(NPvsNN, keep.rownames = T, check.names = T)
+NPvsNN = NPvsNN[,c(1,2,5,6)]
+colnames(NPvsNN)  = c("GeneName","logFC_NPvsNN","P-val_NPvsNN","FDR_NPvsNN")
+setDT(MNvsNP, keep.rownames = T, check.names = T)
+MNvsNP = MNvsNP[,c(1,2,5,6)]
+colnames(MNvsNP)  = c("GeneName","logFC_MNvsNP","P-val_MNvsNP","FDR_MNvsNP")
+setDT(MPvsNP, keep.rownames = T, check.names = T)
+MPvsNP = MPvsNP[,c(1,2,5,6)]
+colnames(MPvsNP)  = c("GeneName","logFC_MPvsNP","P-val_MPvsNP","FDR_MPvsNP")
+setDT(MPvsMN, keep.rownames = T, check.names = T)
+MPvsMN = MPvsMN[,c(1,2,5,6)]
+colnames(MPvsMN)  = c("GeneName","logFC_MPvsMN","P-val_MPvsMN","FDR_MPvsMN")
+
+df_merged = Reduce(function(x, y) merge(x, y, all = T, by = "GeneName"), list(MNvsNN,MPvsNN,NPvsNN,MNvsNP,MPvsNP,MPvsMN))
+#df_merged = round_df(df_merged, digits=7)
+DT::datatable(df_merged, 
+         extensions = c('FixedColumns',"FixedHeader"),
+          options = list(scrollX = TRUE,
+                         paging=TRUE,
+                         fixedHeader=TRUE))
+# fpkm = read.table("../Rawdata/RSEM.genes.FPKM.all_samples.txt",header = T, sep = "\t")
+# fpkm$GeneName = paste0(fpkm$gene_id,"|", fpkm$GeneName)
+# colnames(fpkm)[2] = c("GeneName")
+# fpkm = fpkm[,c(2:10)]
+# 
+# mergedset = merge(df_merged, fpkm, by = "GeneName", all = F )
+#write.csv(mergedset, "../Results-New/DifferentiallyExpressionTable_withNormalizedExpressionvalues.csv", row.names = F, col.names = T,quote = F)
+
+
+
+
+
+```
+<!-- ## MemoryNegative vs NaiveNegative -->
+<!-- ```{r echo = T, warning=F} -->
+<!-- DT::datatable(MNvsNNsubset,  -->
+<!--          extensions = c('FixedColumns',"FixedHeader"), -->
+<!--           options = list(scrollX = TRUE, -->
+<!--                          paging=TRUE, -->
+<!--                          fixedHeader=TRUE)) -->
+<!-- #write.table(diff, "Pairwise_DE.txt", row.names = T, col.names = T, quote = F,sep = "\t") -->
+<!-- ``` -->
+
+<!-- ## MemoryPositive vs NaiveNegative -->
+<!-- ```{r echo = T, warning=F} -->
+<!-- DT::datatable(MPvsNNsubset,  -->
+<!--          extensions = c('FixedColumns',"FixedHeader"), -->
+<!--           options = list(scrollX = TRUE, -->
+<!--                          paging=TRUE, -->
+<!--                          fixedHeader=TRUE)) -->
+<!-- #write.table(diff, "Pairwise_DE.txt", row.names = T, col.names = T, quote = F,sep = "\t") -->
+<!-- ``` -->
+
+<!-- ## NaivePositive vs NaiveNegative -->
+<!-- ```{r echo = T, warning=F} -->
+<!-- DT::datatable(NPvsNNsubset,  -->
+<!--          extensions = c('FixedColumns',"FixedHeader"), -->
+<!--           options = list(scrollX = TRUE, -->
+<!--                          paging=TRUE, -->
+<!--                          fixedHeader=TRUE)) -->
+<!-- #write.table(diff, "Pairwise_DE.txt", row.names = T, col.names = T, quote = F,sep = "\t") -->
+<!-- ``` -->
+
+<!-- ## MemoryNegative vs NaivePositive -->
+<!-- ```{r echo = T, warning=F} -->
+<!-- DT::datatable(MNvsNPsubset,  -->
+<!--          extensions = c('FixedColumns',"FixedHeader"), -->
+<!--           options = list(scrollX = TRUE, -->
+<!--                          paging=TRUE, -->
+<!--                          fixedHeader=TRUE)) -->
+<!-- #write.table(diff, "Pairwise_DE.txt", row.names = T, col.names = T, quote = F,sep = "\t") -->
+<!-- ``` -->
+
+<!-- ## MemoryPositive vs NaivePositive -->
+<!-- ```{r echo = T, warning=F} -->
+<!-- DT::datatable(MPvsNPsubset,  -->
+<!--          extensions = c('FixedColumns',"FixedHeader"), -->
+<!--           options = list(scrollX = TRUE, -->
+<!--                          paging=TRUE, -->
+<!--                          fixedHeader=TRUE)) -->
+<!-- #write.table(diff, "Pairwise_DE.txt", row.names = T, col.names = T, quote = F,sep = "\t") -->
+<!-- ``` -->
+
+<!-- ## MemoryPositive vs MemoryNegative -->
+<!-- ```{r echo = T, warning=F} -->
+<!-- DT::datatable(MPvsMNsubset,  -->
+<!--          extensions = c('FixedColumns',"FixedHeader"), -->
+<!--           options = list(scrollX = TRUE, -->
+<!--                          paging=TRUE, -->
+<!--                          fixedHeader=TRUE)) -->
+<!-- #write.table(diff, "Pairwise_DE.txt", row.names = T, col.names = T, quote = F,sep = "\t") -->
+<!-- ``` -->
+
+# Results - Volcano Plots {.tabset}
+
+## MemoryNegative vs NaiveNegative
+```{r echo = FALSE, warning = F}
+all.genes.con <- MNvsNN
+all.genes.con$groups = "Not Significant"
+
+FDR = all.genes.con$FDR_MNvsNN
+
+FOLD=all.genes.con$logFC_MNvsNN
+
+all.genes.con[which(FDR< 0.1 & abs(FOLD) < 2),"groups"] <- "Significant"
+
+all.genes.con[which(FDR > 0.1 & abs(FOLD) > 2),"groups"] <- "FoldChange"
+
+all.genes.con[which(FDR < 0.1 & abs(FOLD) > 2),"groups"] <- "Significant&LogFoldchange"
+
+genes = all.genes.con$GeneName
+
+#library(plotly)
+
+volcano_data = as.data.frame(cbind(genes, FOLD, FDR, all.genes.con$groups))
+colnames(volcano_data) = c("Genes", "FOLD","FDR","Groups")
+p =plot_ly(data = volcano_data,type = "scatter", x = FOLD, y = -log10(FDR), text = volcano_data$Genes, mode = "markers", color = volcano_data$Groups) %>% layout(xaxis=list(title="log2Fold Change",yaxis=list(title="-Log10 FDR Value")))
+p
+```
+
+## MemoryPositive vs NaiveNegative
+```{r echo = FALSE, warning = F}
+all.genes.con <- MPvsNN
+all.genes.con$groups = "Not Significant"
+
+FDR = all.genes.con$FDR_MPvsNN
+
+FOLD=all.genes.con$logFC_MPvsNN
+
+all.genes.con[which(FDR< 0.1 & abs(FOLD) < 2),"groups"] <- "Significant"
+
+all.genes.con[which(FDR > 0.1 & abs(FOLD) > 2),"groups"] <- "FoldChange"
+
+all.genes.con[which(FDR < 0.1 & abs(FOLD) > 2),"groups"] <- "Significant&LogFoldchange"
+
+genes = all.genes.con$GeneName
+
+#library(plotly)
+
+volcano_data = as.data.frame(cbind(genes, FOLD, FDR, all.genes.con$groups))
+colnames(volcano_data) = c("Genes", "FOLD","FDR","Groups")
+p =plot_ly(data = volcano_data,type = "scatter", x = FOLD, y = -log10(FDR), text = volcano_data$Genes, mode = "markers", color = volcano_data$Groups) %>% layout(xaxis=list(title="log2Fold Change",yaxis=list(title="-Log10 FDR Value")))
+p
+```
+
+## NaivePositive vs NaiveNegative
+```{r echo = FALSE, warning = F}
+all.genes.con <- NPvsNN
+all.genes.con$groups = "Not Significant"
+
+FDR = all.genes.con$FDR_NPvsNN
+
+FOLD=all.genes.con$logFC_NPvsNN
+
+all.genes.con[which(FDR< 0.1 & abs(FOLD) < 2),"groups"] <- "Significant"
+
+all.genes.con[which(FDR > 0.1 & abs(FOLD) > 2),"groups"] <- "FoldChange"
+
+all.genes.con[which(FDR < 0.1 & abs(FOLD) > 2),"groups"] <- "Significant&LogFoldchange"
+
+genes = all.genes.con$GeneName
+
+#library(plotly)
+
+volcano_data = as.data.frame(cbind(genes, FOLD, FDR, all.genes.con$groups))
+colnames(volcano_data) = c("Genes", "FOLD","FDR","Groups")
+p =plot_ly(data = volcano_data,type = "scatter", x = FOLD, y = -log10(FDR), text = volcano_data$Genes, mode = "markers", color = volcano_data$Groups) %>% layout(xaxis=list(title="log2Fold Change",yaxis=list(title="-Log10 FDR Value")))
+p
+```
+
+## MemoryNegative vs NaivePositive
+```{r echo = FALSE, warning = F}
+all.genes.con <- MNvsNP
+all.genes.con$groups = "Not Significant"
+
+FDR = all.genes.con$FDR_MNvsNP
+
+FOLD=all.genes.con$logFC_MNvsNP
+all.genes.con[which(FDR< 0.1 & abs(FOLD) < 2),"groups"] <- "Significant"
+
+all.genes.con[which(FDR > 0.1 & abs(FOLD) > 2),"groups"] <- "FoldChange"
+
+all.genes.con[which(FDR < 0.1 & abs(FOLD) > 2),"groups"] <- "Significant&LogFoldchange"
+
+genes = all.genes.con$GeneName
+
+#library(plotly)
+
+volcano_data = as.data.frame(cbind(genes, FOLD, FDR, all.genes.con$groups))
+colnames(volcano_data) = c("Genes", "FOLD","FDR","Groups")
+p =plot_ly(data = volcano_data,type = "scatter", x = FOLD, y = -log10(FDR), text = volcano_data$Genes, mode = "markers", color = volcano_data$Groups) %>% layout(xaxis=list(title="log2Fold Change",yaxis=list(title="-Log10 FDR Value")))
+p
+```
+
+## MemoryPositive vs NaivePositive
+```{r echo = FALSE, warning = F}
+all.genes.con <- MPvsNP
+all.genes.con$groups = "Not Significant"
+
+FDR = all.genes.con$FDR_MPvsNP
+
+FOLD=all.genes.con$logFC_MPvsNP
+
+all.genes.con[which(FDR< 0.1 & abs(FOLD) < 2),"groups"] <- "Significant"
+
+all.genes.con[which(FDR > 0.1 & abs(FOLD) > 2),"groups"] <- "FoldChange"
+
+all.genes.con[which(FDR < 0.1 & abs(FOLD) > 2),"groups"] <- "Significant&LogFoldchange"
+
+genes = all.genes.con$GeneName
+
+#library(plotly)
+
+volcano_data = as.data.frame(cbind(genes, FOLD, FDR, all.genes.con$groups))
+colnames(volcano_data) = c("Genes", "FOLD","FDR","Groups")
+p =plot_ly(data = volcano_data,type = "scatter", x = FOLD, y = -log10(FDR), text = volcano_data$Genes, mode = "markers", color = volcano_data$Groups) %>% layout(xaxis=list(title="log2Fold Change",yaxis=list(title="-Log10 FDR Value")))
+p
+```
+
+## MemoryPositive vs MemoryNegative
+```{r echo = FALSE, warning = F}
+all.genes.con <- MPvsMN
+all.genes.con$groups = "Not Significant"
+
+FDR = all.genes.con$FDR_MPvsMN
+
+FOLD=all.genes.con$logFC_MPvsMN
+
+all.genes.con[which(FDR< 0.1 & abs(FOLD) < 2),"groups"] <- "Significant"
+
+all.genes.con[which(FDR > 0.1 & abs(FOLD) > 2),"groups"] <- "FoldChange"
+
+all.genes.con[which(FDR < 0.1 & abs(FOLD) > 2),"groups"] <- "Significant&LogFoldchange"
+
+genes = all.genes.con$GeneName
+
+#library(plotly)
+
+volcano_data = as.data.frame(cbind(genes, FOLD, FDR, all.genes.con$groups))
+colnames(volcano_data) = c("Genes", "FOLD","FDR","Groups")
+p =plot_ly(data = volcano_data,type = "scatter", x = FOLD, y = -log10(FDR), text = volcano_data$Genes, mode = "markers", color = volcano_data$Groups) %>% layout(xaxis=list(title="log2Fold Change",yaxis=list(title="-Log10 FDR Value")))
+p
+```
+
+# Result - Heatmaps {.tabset}
+## MemoryNegative vs NaiveNegative
+
+```{r echo= T, warning = F}
+subsetresult1 = data.frame(subset(MNvsNN, MNvsNN$FDR_MNvsNN < 0.05 & abs(MNvsNN$logFC_MNvsNN)>2))
+#setDT(subsetresult1, keep.rownames = T, check.names = T)
+#colnames(subsetresult1)[1] = c("GeneName")
+fpkm = read.table("../Rawdata/RSEM.genes.FPKM.all_samples.txt",header = T, sep = "\t")
+fpkm$GeneName = paste0(fpkm$gene_id,"|", fpkm$GeneName)
+colnames(fpkm)[2] = c("GeneName")
+fpkm = fpkm[,c(2:10)]
+# removebatch1 = data.frame(removebatch)
+# setDT(removebatch1, keep.rownames = T, check.names = T)
+# colnames(removebatch1)[1] = c("GeneName")
+# removebatch1 = removebatch1[,c(1,2,3,6,7)]
+mergedset = merge(subsetresult1, fpkm, by = "GeneName", all = F )
+mergedset = mergedset[,c(1,5:12)]
+#write.csv(mergedset, "DifferentialExpressionTable_WithNormalizedExpressionVlaues.csv", row.names = F, col.names = T,quote = F)
+mergedset = as.matrix(mergedset)
+rownames(mergedset) = mergedset[,1]
+mergedset = mergedset[,-1]
+mergedset = data.frame(mergedset)
+#mergedset[is.na(mergedset)] = 0
+mergedset[1:8] = lapply(mergedset[1:8],function(x) as.character(x))
+mergedset[1:8] = lapply(mergedset[1:8],function(x) as.numeric(x))
+mergedset = as.matrix(mergedset)
+mergedset = mergedset[rowSums(mergedset)>0,]
+col = colorRampPalette( c("blue","white","red") )
+pdf("Heatmap_MNvsNN_TopDE_FDR<0.05.pdf", height = 20, width = 10)
+heatmap.2(mergedset,
+          scale = "row",
+          trace = "none",
+          col = col ,
+          Colv = F ,
+          Rowv = T,
+          dendrogram = "row",
+          distfun = function(x) as.dist(1-cor(t(x))) ,
+          hclustfun =  function(x) hclust(x,method="average"),
+          cexRow = 0.3 , cexCol = 0.7,main = "Differentially expressed Genes" )
+dev.off()
+```
+
+## Memory Positive vs Naive Negative
+```{r echo= T, warning = F}
+subsetresult1 = data.frame(subset(MPvsNN, MPvsNN$FDR_MPvsNN < 0.05 & abs(MPvsNN$logFC_MPvsNN)>2))
+#setDT(subsetresult1, keep.rownames = T, check.names = T)
+colnames(subsetresult1)[1] = c("GeneName")
+
+fpkm = read.table("../Rawdata/RSEM.genes.FPKM.all_samples.txt",header = T, sep = "\t")
+fpkm$GeneName = paste0(fpkm$gene_id,"|", fpkm$GeneName)
+colnames(fpkm)[2] = c("GeneName")
+fpkm = fpkm[,c(2:10)]
+# removebatch2 = data.frame(removebatch)
+# setDT(removebatch2, keep.rownames = T, check.names = T)
+# colnames(removebatch2)[1] = c("GeneName")
+# removebatch2 = removebatch2[,c(1, 4:7)]
+mergedset = merge(subsetresult1, fpkm, by = "GeneName", all = F )
+mergedset = mergedset[,c(1,5:12)]
+#write.csv(mergedset, "DifferentialExpressionTable_WithNormalizedExpressionVlaues.csv", row.names = F, col.names = T,quote = F)
+mergedset = as.matrix(mergedset)
+rownames(mergedset) = mergedset[,1]
+mergedset = mergedset[,-1]
+mergedset = data.frame(mergedset)
+#mergedset[is.na(mergedset)] = 0
+mergedset[1:8] = lapply(mergedset[1:8],function(x) as.character(x))
+mergedset[1:8] = lapply(mergedset[1:8],function(x) as.numeric(x))
+mergedset = as.matrix(mergedset)
+mergedset = mergedset[rowSums(mergedset)>0,]
+col = colorRampPalette( c("blue","white","red") )
+pdf("Heatmap_MPvsNN_TopDE_FDR<0.05.pdf", height = 20, width = 10)
+heatmap.2(mergedset, 
+          scale = "row", 
+          trace = "none", 
+          col = col , 
+          Colv = F , 
+          Rowv = T,
+          dendrogram = "row",
+          distfun = function(x) as.dist(1-cor(t(x))) , 
+          hclustfun =  function(x) hclust(x,method="average"), 
+          cexRow = 0.3 , cexCol = 0.7,main = "Differentially expressed Genes" )
+dev.off()
+```
+
+## Naive Positive vs Naive Negative
+```{r echo= T, warning = F}
+subsetresult1 = data.frame(subset(NPvsNN, NPvsNN$FDR_NPvsNN < 0.05 & abs(NPvsNN$logFC_NPvsNN)>2))
+#setDT(subsetresult1, keep.rownames = T, check.names = T)
+colnames(subsetresult1)[1] = c("GeneName")
+fpkm = read.table("../Rawdata/RSEM.genes.FPKM.all_samples.txt",header = T, sep = "\t")
+fpkm$GeneName = paste0(fpkm$gene_id,"|", fpkm$GeneName)
+colnames(fpkm)[2] = c("GeneName")
+fpkm = fpkm[,c(2:10)]
+# removebatch3 = data.frame(removebatch)
+# setDT(removebatch3, keep.rownames = T, check.names = T)
+# colnames(removebatch3)[1] = c("GeneName")
+# removebatch3 = removebatch3[,c(1, 8,9,6,7)]
+mergedset = merge(subsetresult1, fpkm, by = "GeneName", all = F )
+mergedset = mergedset[,c(1,5:12)]
+#write.csv(mergedset, "DifferentialExpressionTable_WithNormalizedExpressionVlaues.csv", row.names = F, col.names = T,quote = F)
+mergedset = as.matrix(mergedset)
+rownames(mergedset) = mergedset[,1]
+mergedset = mergedset[,-1]
+mergedset = data.frame(mergedset)
+#mergedset[is.na(mergedset)] = 0
+mergedset[1:8] = lapply(mergedset[1:8],function(x) as.character(x))
+mergedset[1:8] = lapply(mergedset[1:8],function(x) as.numeric(x))
+mergedset = as.matrix(mergedset)
+mergedset = mergedset[rowSums(mergedset)>0,]
+col = colorRampPalette( c("blue","white","red") )
+pdf("Heatmap_NPvsNN_TopDE_FDR<0.05.pdf", height = 20, width = 10)
+heatmap.2(mergedset, 
+          scale = "row", 
+          trace = "none", 
+          col = col , 
+          Colv = F , 
+          Rowv = T,
+          dendrogram = "row",
+          distfun = function(x) as.dist(1-cor(t(x))) , 
+          hclustfun =  function(x) hclust(x,method="average"), 
+          cexRow = 0.3 , cexCol = 0.7,main = "Differentially expressed Genes" )
+dev.off()
+```
+
+## Memory Positive vs Naive Positive
+```{r echo= T, warning = F}
+subsetresult1 = data.frame(subset(MPvsNP, MPvsNP$FDR_MPvsNP < 0.05 & abs(MPvsNP$logFC_MPvsNP)>2))
+#setDT(subsetresult1, keep.rownames = T, check.names = T)
+colnames(subsetresult1)[1] = c("GeneName")
+fpkm = read.table("../Rawdata/RSEM.genes.FPKM.all_samples.txt",header = T, sep = "\t")
+fpkm$GeneName = paste0(fpkm$gene_id,"|", fpkm$GeneName)
+colnames(fpkm)[2] = c("GeneName")
+fpkm = fpkm[,c(2:10)]
+# removebatch4 = data.frame(removebatch)
+# setDT(removebatch4, keep.rownames = T, check.names = T)
+# colnames(removebatch4)[1] = c("GeneName")
+# removebatch4 = removebatch4[,c(1, 4,5,8,9)]
+mergedset = merge(subsetresult1, fpkm, by = "GeneName", all = F )
+mergedset = mergedset[,c(1,5:12)]
+#write.csv(mergedset, "DifferentialExpressionTable_WithNormalizedExpressionVlaues.csv", row.names = F, col.names = T,quote = F)
+mergedset = as.matrix(mergedset)
+rownames(mergedset) = mergedset[,1]
+mergedset = mergedset[,-1]
+mergedset = data.frame(mergedset)
+#mergedset[is.na(mergedset)] = 0
+mergedset[1:8] = lapply(mergedset[1:8],function(x) as.character(x))
+mergedset[1:8] = lapply(mergedset[1:8],function(x) as.numeric(x))
+mergedset = as.matrix(mergedset)
+mergedset = mergedset[rowSums(mergedset)>0,]
+col = colorRampPalette( c("blue","white","red") )
+pdf("Heatmap_MPvsNP_TopDE_FDR<0.05.pdf", height = 20, width = 10)
+heatmap.2(mergedset, 
+          scale = "row", 
+          trace = "none", 
+          col = col , 
+          Colv = F , 
+          Rowv = T,
+          dendrogram = "row",
+          distfun = function(x) as.dist(1-cor(t(x))) , 
+          hclustfun =  function(x) hclust(x,method="average"), 
+          cexRow = 0.3 , cexCol = 0.7,main = "Differentially expressed Genes" )
+dev.off()
+```
+
+## Memory Negative vs Naive Positive
+```{r echo= T, warning = F}
+subsetresult1 = data.frame(subset(MNvsNP, MNvsNP$FDR_MNvsNP< 0.05 & abs(MNvsNP$logFC_MNvsNP)>2))
+#setDT(subsetresult1, keep.rownames = T, check.names = T)
+colnames(subsetresult1)[1] = c("GeneName")
+fpkm = read.table("../Rawdata/RSEM.genes.FPKM.all_samples.txt",header = T, sep = "\t")
+fpkm$GeneName = paste0(fpkm$gene_id,"|", fpkm$GeneName)
+colnames(fpkm)[2] = c("GeneName")
+fpkm = fpkm[,c(2:10)]
+# removebatch4 = data.
+# removebatch5 = data.frame(removebatch)
+# setDT(removebatch5, keep.rownames = T, check.names = T)
+# colnames(removebatch5)[1] = c("GeneName")
+# removebatch5 = removebatch5[,c(1, 2,3,8,9)]
+mergedset = merge(subsetresult1, fpkm, by = "GeneName", all = F )
+mergedset = mergedset[,c(1,5:12)]
+#write.csv(mergedset, "DifferentialExpressionTable_WithNormalizedExpressionVlaues.csv", row.names = F, col.names = T,quote = F)
+mergedset = as.matrix(mergedset)
+rownames(mergedset) = mergedset[,1]
+mergedset = mergedset[,-1]
+mergedset = data.frame(mergedset)
+#mergedset[is.na(mergedset)] = 0
+mergedset[1:8] = lapply(mergedset[1:8],function(x) as.character(x))
+mergedset[1:8] = lapply(mergedset[1:8],function(x) as.numeric(x))
+mergedset = as.matrix(mergedset)
+mergedset = mergedset[rowSums(mergedset)>0,]
+
+col = colorRampPalette( c("blue","white","red") )
+
+pdf("Heatmap_MNvsNP_TopDE_FDR<0.05.pdf", height = 20, width = 10)
+
+heatmap.2(mergedset, 
+          scale = "row", 
+          trace = "none", 
+          col = col , 
+          Colv = F , 
+          Rowv = T,
+          dendrogram = "row",
+          distfun = function(x) as.dist(1-cor(t(x))) , 
+          hclustfun =  function(x) hclust(x,method="average"), 
+          cexRow = 0.3 , cexCol = 0.7,main = "Differentially expressed Genes" )
+dev.off()
+```
+
+## Memory Negative vs Memory Positive
+```{r echo= T, warning = F}
+subsetresult1 = data.frame(subset(MPvsMN, MPvsMN$FDR_MPvsMN < 0.05 & abs(MPvsMN$logFC_MPvsMN)>2))
+#setDT(subsetresult1, keep.rownames = T, check.names = T)
+colnames(subsetresult1)[1] = c("GeneName")
+fpkm = read.table("../Rawdata/RSEM.genes.FPKM.all_samples.txt",header = T, sep = "\t")
+fpkm$GeneName = paste0(fpkm$gene_id,"|", fpkm$GeneName)
+colnames(fpkm)[2] = c("GeneName")
+fpkm = fpkm[,c(2:10)]
+# removebatch4 = data.
+ 
+# removebatch6 = data.frame(removebatch)
+# setDT(removebatch6, keep.rownames = T, check.names = T)
+# colnames(removebatch6)[1] = c("GeneName")
+# removebatch6 = removebatch6[,c(1:5)]
+mergedset = merge(subsetresult1, fpkm, by = "GeneName", all = F )
+mergedset = mergedset[,c(1,5:12)]
+#write.csv(mergedset, "DifferentialExpressionTable_WithNormalizedExpressionVlaues.csv", row.names = F, col.names = T,quote = F)
+mergedset = as.matrix(mergedset)
+rownames(mergedset) = mergedset[,1]
+mergedset = mergedset[,-1]
+mergedset = data.frame(mergedset)
+#mergedset[is.na(mergedset)] = 0
+mergedset[1:8] = lapply(mergedset[1:8],function(x) as.character(x))
+mergedset[1:8] = lapply(mergedset[1:8],function(x) as.numeric(x))
+mergedset = as.matrix(mergedset)
+mergedset = mergedset[rowSums(mergedset)>0,]
+col = colorRampPalette( c("blue","white","red") )
+pdf("Heatmap_MPvsMN_TopDE_FDR<0.05.pdf", height = 20, width = 10)
+heatmap.2(mergedset, 
+          scale = "row", 
+          trace = "none", 
+          col = col , 
+          Colv = F , 
+          Rowv = T,
+          dendrogram = "row",
+          distfun = function(x) as.dist(1-cor(t(x))) , 
+          hclustfun =  function(x) hclust(x,method="average"), 
+          cexRow = 0.3 , cexCol = 0.7,main = "Differentially expressed Genes" )
+dev.off()
+```
+
+
+# Session Info
+```{r echo =TRUE}
+sessionInfo()
+```
+
